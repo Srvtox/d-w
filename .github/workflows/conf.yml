@@ -11,7 +11,7 @@ jobs:
 
     steps:
 
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Install tools
@@ -26,14 +26,14 @@ jobs:
           rm -f data/*
           rm -f output/*
 
-      - name: Download sources
+      - name: Download config sources
         run: |
           curl -L https://raw.githubusercontent.com/mfuu/v2ray/master/v2ray -o data/sub1.txt || true
           curl -L https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt -o data/sub2.txt || true
           curl -L https://raw.githubusercontent.com/SoliSpirit/v2ray-configs/main/all_configs.txt -o data/sub3.txt || true
           curl -L https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/v2ray.txt -o data/sub4.txt || true
 
-      - name: Decode subscriptions safely
+      - name: Decode subscriptions
         run: |
           touch data/all.txt
 
@@ -50,7 +50,7 @@ jobs:
           grep -Eo '(vmess|vless|trojan|ss)://[^ ]+' data/all.txt > data/protocols.txt || true
           sort -u data/protocols.txt -o data/protocols.txt || true
 
-      - name: Check connectivity (TCP)
+      - name: Test TCP connectivity
         run: |
           touch output/working.txt
 
