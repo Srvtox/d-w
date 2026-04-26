@@ -1,82 +1,87 @@
-name: V2Ray Auto Checker
+name: V2Ray Aggregator
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 jobs:
-  scan:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+
+      - name: Checkout repo
         uses: actions/checkout@v3
 
-      - name: Install dependencies
+      - name: Install tools
         run: |
           sudo apt update
-          sudo apt install -y curl jq coreutils
+          sudo apt install -y curl jq unzip
+
+      - name: Install Xray
+        run: |
+          wget https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          unzip Xray-linux-64.zip
+          chmod +x xray
 
       - name: Prepare folders
         run: |
           mkdir -p data
           mkdir -p output
-          rm -f output/working.txt
+          rm -rf data/*
+          rm -rf output/*
 
       - name: Download subscriptions
         run: |
           curl -L https://raw.githubusercontent.com/mfuu/v2ray/master/v2ray -o data/sub1.txt
           curl -L https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt -o data/sub2.txt
-          curl -L https://raw.githubusercontent.com/SoliSpirit/v2ray-configs/refs/heads/main/all_configs.txt -o data/sub3.txt
+          curl -L https://raw.githubusercontent.com/SoliSpirit/v2ray-configs/main/all_configs.txt -o data/sub3.txt
+          curl -L https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/v2ray.txt -o data/sub4.txt
 
-      - name: Decode subscriptions safely
+      - name: Decode subscriptions
         run: |
-          rm -f data/all.txt
           touch data/all.txt
 
           for f in data/*.txt; do
-            if [ "$f" = "data/all.txt" ]; then
-              continue
-            fi
-
-            if base64 -d "$f" > data/tmp.txt 2>/dev/null; then
-              cat data/tmp.txt >> data/all.txt
-            else
-              cat "$f" >> data/all.txt
-            fi
+            base64 -d "$f" > data/tmp.txt 2>/dev/null || cat "$f" > data/tmp.txt
+            cat data/tmp.txt >> data/all.txt
           done
 
           rm -f data/tmp.txt
 
-      - name: Filter protocols
+      - name: Extract configs
         run: |
-          grep -E "vmess://|vless://|trojan://|ss://" data/all.txt > data/protocols.txt || true
+          grep -Eo '(vmess|vless|trojan|ss)://[^ ]+' data/all.txt > data/configs.txt || true
+          sort -u data/configs.txt -o data/configs.txt
 
-      - name: Check connectivity
+      - name: Simple connectivity test
         run: |
-          while read line; do
-            host=$(echo $line | sed -E 's#(vmess|vless|trojan|ss)://([^@]+@)?([^:/]+).*#\3#')
-            if [ ! -z "$host" ]; then
-              ping -c1 -W1 $host >/dev/null 2>&1
-              if [ $? -eq 0 ]; then
-                echo $line >> output/working.txt
-              fi
+          touch output/working.txt
+
+          while IFS= read -r line
+          do
+            host=$(echo "$line" | sed -E 's#(vmess|vless|trojan|ss)://([^@]+@)?([^:/]+).*#\3#')
+
+            if [ -n "$host" ]; then
+              timeout 3 bash -c "cat < /dev/null > /dev/tcp/$host/443" 2>/dev/null && echo "$line" >> output/working.txt || true
             fi
-          done < data/protocols.txt
+
+          done < data/configs.txt
 
       - name: Remove duplicates
         run: |
           sort -u output/working.txt -o output/working.txt
 
-      - name: Encode final subscription
+      - name: Generate subscription
         run: |
           base64 -w0 output/working.txt > output/subscription.txt
 
-      - name: Commit results
+      - name: Commit result
         run: |
           git config --global user.name "actions-bot"
           git config --global user.email "actions@github.com"
+
           git add output/*
-          git commit -m "update working v2ray configs" || echo "No changes"
+          git commit -m "Auto update configs" || echo "No changes"
           git push
