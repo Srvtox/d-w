@@ -1,4 +1,4 @@
-name: V2Ray Auto Aggregator
+name: V2Ray Auto Collector
 
 on:
   schedule:
@@ -11,7 +11,7 @@ jobs:
 
     steps:
 
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v3
 
       - name: Install tools
@@ -26,7 +26,7 @@ jobs:
           rm -f data/*
           rm -f output/*
 
-      - name: Download config sources
+      - name: Download sources
         run: |
           curl -L https://raw.githubusercontent.com/mfuu/v2ray/master/v2ray -o data/sub1.txt || true
           curl -L https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt -o data/sub2.txt || true
@@ -37,7 +37,8 @@ jobs:
         run: |
           touch data/all.txt
 
-          for f in data/*.txt; do
+          for f in data/*.txt
+          do
             base64 -d "$f" > data/tmp.txt 2>/dev/null || cat "$f" > data/tmp.txt
             cat data/tmp.txt >> data/all.txt
           done
@@ -46,10 +47,10 @@ jobs:
 
       - name: Extract protocols
         run: |
-          grep -Eo '(vmess|vless|trojan|ss)://[^ ]+' data/all.txt > data/configs.txt || true
-          sort -u data/configs.txt -o data/configs.txt || true
+          grep -Eo '(vmess|vless|trojan|ss)://[^ ]+' data/all.txt > data/protocols.txt || true
+          sort -u data/protocols.txt -o data/protocols.txt || true
 
-      - name: Test TCP connectivity
+      - name: Check connectivity (TCP)
         run: |
           touch output/working.txt
 
@@ -66,7 +67,7 @@ jobs:
               timeout 3 bash -c "cat < /dev/null > /dev/tcp/$host/$port" 2>/dev/null && echo "$line" >> output/working.txt || true
             fi
 
-          done < data/configs.txt || true
+          done < data/protocols.txt || true
 
       - name: Remove duplicates
         run: |
