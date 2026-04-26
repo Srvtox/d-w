@@ -26,8 +26,9 @@ jobs:
 
       - name: Download subscriptions
         run: |
-          curl -L https://raw.githubusercontent.com/mfuu/v2ray/master/v2ray > data/sub1.txt
-          curl -L https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt > data/sub2.txt
+          curl -L https://raw.githubusercontent.com/mfuu/v2ray/master/v2ray -o data/sub1.txt
+          curl -L https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt -o data/sub2.txt
+          curl -L https://raw.githubusercontent.com/SoliSpirit/v2ray-configs/refs/heads/main/all_configs.txt -o data/sub3.txt
 
       - name: Decode subscriptions safely
         run: |
@@ -35,6 +36,10 @@ jobs:
           touch data/all.txt
 
           for f in data/*.txt; do
+            if [ "$f" = "data/all.txt" ]; then
+              continue
+            fi
+
             if base64 -d "$f" > data/tmp.txt 2>/dev/null; then
               cat data/tmp.txt >> data/all.txt
             else
