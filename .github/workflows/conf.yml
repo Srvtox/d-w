@@ -1,20 +1,28 @@
-name: Create Tunnel
+name: Tunnel Test
 
-on: [push]
+on:
+  push:
 
 jobs:
   tunnel:
     runs-on: ubuntu-latest
+
     steps:
-    - name: Checkout
-      uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-    - name: Start Tunnel
-      id: tun
-      uses: anyvm-org/cf-tunnel@v0
-      with:
-        protocol: http
-        port: 8080
+      - name: Start local server
+        run: |
+          nohup python3 -m http.server 8080 &
 
-    - name: Show Tunnel URL
-      run: echo "Tunnel URL: https://${{ steps.tun.outputs.server }}"
+      - name: Create tunnel
+        uses: codetalkio/expose-tunnel@v1.5.0
+        id: expose
+        with:
+          service: bore.pub
+          port: 8080
+
+      - name: Print tunnel URL
+        run: echo "Tunnel URL: ${{ steps.expose.outputs.tunnel-url }}"
+
+      - name: Keep tunnel alive
+        run: timeout 30m sleep 7200
