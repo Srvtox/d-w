@@ -22,7 +22,9 @@ jobs:
           port: 8080
 
       - name: Print tunnel URL
-        run: echo "Tunnel URL: ${{ steps.expose.outputs['tunnel-url'] }}"
+        run: |
+          echo "Tunnel URL: ${{ steps.expose.outputs['tunnel-url'] }}"
 
       - name: Keep tunnel alive
-        run: timeout 30m sleep 7200
+        run: |
+          timeout 30m sleep 7200
