@@ -10,34 +10,21 @@ jobs:
 
     steps:
 
+      - name: Update
+        run: sudo apt update
+
       ########################################################
-      # UPDATE
+      # INSTALL DESKTOP
       ########################################################
 
-      - name: Update System
+      - name: Install XFCE + VNC
         run: |
-          sudo apt update
-
-      ########################################################
-      # INSTALL DESKTOP + VNC
-      ########################################################
-
-      - name: Install Desktop Environment
-        run: |
-          sudo apt install -y \
-            xfce4 \
-            xfce4-goodies \
-            tigervnc-standalone-server \
-            tigervnc-common \
-            novnc \
-            websockify \
-            dbus-x11 \
-            x11-xserver-utils \
-            xterm \
-            wget \
-            curl \
-            net-tools \
-            python3-pip
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y \
+          xfce4 xfce4-goodies \
+          tigervnc-standalone-server tigervnc-common \
+          novnc websockify \
+          dbus-x11 x11-xserver-utils \
+          xterm net-tools curl wget python3-pip
 
       ########################################################
       # CONFIGURE VNC
@@ -48,27 +35,23 @@ jobs:
 
           mkdir -p ~/.vnc
 
-          # VNC PASSWORD
           echo "123456" | vncpasswd -f > ~/.vnc/passwd
           chmod 600 ~/.vnc/passwd
 
-          # CLEAN OLD LOCKS
           rm -rf /tmp/.X1-lock || true
           rm -rf /tmp/.X11-unix/X1 || true
 
-          # FIX XSTARTUP
           cat > ~/.vnc/xstartup <<'EOF'
-          #!/bin/bash
+          #!/bin/sh
 
           unset SESSION_MANAGER
           unset DBUS_SESSION_BUS_ADDRESS
 
           export XDG_RUNTIME_DIR=/tmp/runtime-root
           mkdir -p $XDG_RUNTIME_DIR
+          chmod 700 $XDG_RUNTIME_DIR
 
-          xrdb $HOME/.Xresources
-
-          startxfce4 &
+          exec dbus-launch --exit-with-session startxfce4
           EOF
 
           chmod +x ~/.vnc/xstartup
@@ -77,8 +60,10 @@ jobs:
       # START VNC
       ########################################################
 
-      - name: Start VNC Server
+      - name: Start VNC
         run: |
+
+          vncserver -kill :1 || true
 
           vncserver :1 -geometry 1280x720 -depth 24
 
@@ -95,13 +80,12 @@ jobs:
         run: |
 
           nohup websockify \
-            --web=/usr/share/novnc/ \
-            6080 localhost:5901 \
-            > novnc.log 2>&1 &
+          --web=/usr/share/novnc/ \
+          6080 localhost:5901 \
+          > novnc.log 2>&1 &
 
           sleep 5
 
-          echo "========= noVNC ========="
           netstat -tulpn | grep 6080 || true
 
       ########################################################
@@ -116,11 +100,9 @@ jobs:
           -O wgcf
 
           chmod +x wgcf
-
           sudo mv wgcf /usr/local/bin/
 
           yes | wgcf register
-
           wgcf generate
 
       ########################################################
@@ -136,17 +118,16 @@ jobs:
           tar -xzf wireproxy_linux_amd64.tar.gz
 
           chmod +x wireproxy
-
           sudo mv wireproxy /usr/local/bin/
 
       ########################################################
-      # BUILD WARP CONFIG
+      # CREATE WARP CONFIG
       ########################################################
 
-      - name: Build WireProxy Config
+      - name: Create WARP Config
         run: |
 
-          mkdir -p warp
+          mkdir warp
 
           PRIVATE=$(grep PrivateKey wgcf-profile.conf | awk '{print $3}')
           ADDRESS=$(grep Address wgcf-profile.conf | awk '{print $3}')
@@ -176,26 +157,24 @@ jobs:
         run: |
 
           nohup wireproxy -c warp/config.ini \
-            > warp.log 2>&1 &
+          > warp.log 2>&1 &
 
-          sleep 10
+          sleep 8
 
-          echo "========= WARP ========="
           cat warp.log || true
 
       ########################################################
-      # INSTALL PYTHON PACKAGES
+      # INSTALL FLASK
       ########################################################
 
-      - name: Install Flask Packages
-        run: |
-          pip3 install flask requests pysocks gevent
+      - name: Install Flask
+        run: pip3 install flask requests pysocks
 
       ########################################################
-      # CREATE BRIDGE
+      # CREATE PROXY
       ########################################################
 
-      - name: Create Flask Bridge
+      - name: Create Bridge
         run: |
 
           cat > app.py <<'PY'
@@ -206,84 +185,55 @@ jobs:
 
           SOCKS = "socks5h://127.0.0.1:1081"
 
-          @app.route('/', defaults={'path': ''}, methods=["GET","POST"])
-          @app.route('/<path:path>', methods=["GET","POST"])
+          @app.route('/', defaults={'path': ''})
+          @app.route('/<path:path>')
           def proxy(path):
 
-              target = f"http://127.0.0.1:6080/{path}"
+              url = f"http://127.0.0.1:6080/{path}"
 
-              try:
+              r = requests.get(
+                  url,
+                  stream=True,
+                  proxies={
+                      "http": SOCKS,
+                      "https": SOCKS
+                  }
+              )
 
-                  if request.method == "POST":
-                      r = requests.post(
-                          target,
-                          data=request.get_data(),
-                          headers=request.headers,
-                          stream=True,
-                          proxies={
-                              "http": SOCKS,
-                              "https": SOCKS
-                          }
-                      )
-                  else:
-                      r = requests.get(
-                          target,
-                          stream=True,
-                          proxies={
-                              "http": SOCKS,
-                              "https": SOCKS
-                          }
-                      )
+              excluded = [
+                  'content-encoding',
+                  'content-length',
+                  'transfer-encoding',
+                  'connection'
+              ]
 
-                  excluded = [
-                      'content-encoding',
-                      'content-length',
-                      'transfer-encoding',
-                      'connection'
-                  ]
+              headers = [
+                  (k,v) for k,v in r.raw.headers.items()
+                  if k.lower() not in excluded
+              ]
 
-                  headers = [
-                      (k, v)
-                      for k, v in r.raw.headers.items()
-                      if k.lower() not in excluded
-                  ]
+              return Response(r.content, r.status_code, headers)
 
-                  return Response(
-                      r.content,
-                      r.status_code,
-                      headers
-                  )
-
-              except Exception as e:
-                  return str(e), 500
-
-          app.run(
-              host='0.0.0.0',
-              port=8080,
-              threaded=True
-          )
+          app.run(host="0.0.0.0", port=8080)
           PY
 
       ########################################################
-      # START BRIDGE
+      # START PROXY
       ########################################################
 
-      - name: Start Flask Bridge
+      - name: Start Bridge
         run: |
 
           nohup python3 app.py \
-            > bridge.log 2>&1 &
+          > bridge.log 2>&1 &
 
           sleep 5
 
-          echo "========= BRIDGE ========="
-          cat bridge.log || true
-
       ########################################################
-      # INSTALL CLOUDFLARED
+      # CLOUDFLARE TUNNEL
       ########################################################
 
-      - name: Install cloudflared
+      - name: Install Cloudflared
         run: |
 
           wget -q \
@@ -292,54 +242,46 @@ jobs:
 
           chmod +x cloudflared
 
-      ########################################################
-      # START TUNNEL
-      ########################################################
-
-      - name: Start Cloudflare Tunnel
+      - name: Start Tunnel
         run: |
 
           nohup ./cloudflared tunnel \
-            --url http://127.0.0.1:8080 \
-            > tunnel.log 2>&1 &
+          --url http://127.0.0.1:8080 \
+          > tunnel.log 2>&1 &
 
           sleep 20
 
-          echo "========= TUNNEL LOG ========="
-          cat tunnel.log || true
+          echo "========= TUNNEL ========="
+          cat tunnel.log
 
       ########################################################
-      # SHOW FINAL URL
+      # SHOW URL
       ########################################################
 
-      - name: Show Access URL
+      - name: Show Desktop URL
         run: |
-
-          echo ""
-          echo "====================================="
-          echo "            UBUNTU DESKTOP"
-          echo "====================================="
-          echo ""
 
           URL=$(grep -o 'https://[-a-z0-9]*\.trycloudflare\.com' tunnel.log | head -n 1)
 
-          echo "OPEN THIS LINK:"
           echo ""
+          echo "======================================"
+          echo "UBUNTU DESKTOP READY"
+          echo ""
+          echo "OPEN:"
           echo "$URL/vnc.html"
           echo ""
           echo "PASSWORD: 123456"
-          echo ""
-          echo "====================================="
+          echo "======================================"
 
       ########################################################
-      # KEEP RUNNER ALIVE
+      # KEEP ALIVE
       ########################################################
 
-      - name: Keep Alive
+      - name: Keep Runner Alive
         run: |
 
           while true
           do
-            echo "Ubuntu Desktop Alive 😎"
+            echo "Ubuntu Desktop Running 😎"
             sleep 60
           done
