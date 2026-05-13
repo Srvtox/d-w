@@ -24,7 +24,7 @@ jobs:
 
       - name: Install Desktop Environment
         run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt install -y \
+          sudo apt install -y \
             xfce4 \
             xfce4-goodies \
             tigervnc-standalone-server \
