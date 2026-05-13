@@ -1,33 +1,345 @@
-name: Debug SSH Runner
+name: Ubuntu VNC Ultimate
 
 on:
   workflow_dispatch:
 
 jobs:
-  debug:
+  desktop:
     runs-on: ubuntu-latest
-    timeout-minutes: 65   # یکم بیشتر از ۱ ساعت برای احتیاط
+    timeout-minutes: 360
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
 
-      - name: Start SSH session (tmate)
-        uses: mxschmitt/action-tmate@v3
+      ########################################################
+      # UPDATE
+      ########################################################
 
-      - name: Keep runner alive for 1 hour
+      - name: Update System
         run: |
-          echo "🚀 SSH session is active."
-          echo "⏳ Keeping runner alive for 1 hour..."
+          sudo apt update
 
-          START=$(date +%s)
-          END=$((START + 3600))
+      ########################################################
+      # INSTALL DESKTOP + VNC
+      ########################################################
 
-          while [ $(date +%s) -lt $END ]; do
-            NOW=$(date +%s)
-            REMAIN=$((END - NOW))
-            echo "⏱ Remaining: $REMAIN seconds"
+      - name: Install Desktop Environment
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y \
+            xfce4 \
+            xfce4-goodies \
+            tigervnc-standalone-server \
+            tigervnc-common \
+            novnc \
+            websockify \
+            dbus-x11 \
+            x11-xserver-utils \
+            xterm \
+            wget \
+            curl \
+            net-tools \
+            python3-pip
+
+      ########################################################
+      # CONFIGURE VNC
+      ########################################################
+
+      - name: Configure VNC
+        run: |
+
+          mkdir -p ~/.vnc
+
+          # VNC PASSWORD
+          echo "123456" | vncpasswd -f > ~/.vnc/passwd
+          chmod 600 ~/.vnc/passwd
+
+          # CLEAN OLD LOCKS
+          rm -rf /tmp/.X1-lock || true
+          rm -rf /tmp/.X11-unix/X1 || true
+
+          # FIX XSTARTUP
+          cat > ~/.vnc/xstartup <<'EOF'
+          #!/bin/bash
+
+          unset SESSION_MANAGER
+          unset DBUS_SESSION_BUS_ADDRESS
+
+          export XDG_RUNTIME_DIR=/tmp/runtime-root
+          mkdir -p $XDG_RUNTIME_DIR
+
+          xrdb $HOME/.Xresources
+
+          startxfce4 &
+          EOF
+
+          chmod +x ~/.vnc/xstartup
+
+      ########################################################
+      # START VNC
+      ########################################################
+
+      - name: Start VNC Server
+        run: |
+
+          vncserver :1 -geometry 1280x720 -depth 24
+
+          sleep 10
+
+          echo "========= VNC LOG ========="
+          cat ~/.vnc/*.log || true
+
+      ########################################################
+      # START NOVNC
+      ########################################################
+
+      - name: Start noVNC
+        run: |
+
+          nohup websockify \
+            --web=/usr/share/novnc/ \
+            6080 localhost:5901 \
+            > novnc.log 2>&1 &
+
+          sleep 5
+
+          echo "========= noVNC ========="
+          netstat -tulpn | grep 6080 || true
+
+      ########################################################
+      # INSTALL WGCF
+      ########################################################
+
+      - name: Install WGCF
+        run: |
+
+          wget -q \
+          https://github.com/ViRb3/wgcf/releases/download/v2.2.22/wgcf_2.2.22_linux_amd64 \
+          -O wgcf
+
+          chmod +x wgcf
+
+          sudo mv wgcf /usr/local/bin/
+
+          yes | wgcf register
+
+          wgcf generate
+
+      ########################################################
+      # INSTALL WIREPROXY
+      ########################################################
+
+      - name: Install WireProxy
+        run: |
+
+          wget -q \
+          https://github.com/pufferffish/wireproxy/releases/download/v1.0.9/wireproxy_linux_amd64.tar.gz
+
+          tar -xzf wireproxy_linux_amd64.tar.gz
+
+          chmod +x wireproxy
+
+          sudo mv wireproxy /usr/local/bin/
+
+      ########################################################
+      # BUILD WARP CONFIG
+      ########################################################
+
+      - name: Build WireProxy Config
+        run: |
+
+          mkdir -p warp
+
+          PRIVATE=$(grep PrivateKey wgcf-profile.conf | awk '{print $3}')
+          ADDRESS=$(grep Address wgcf-profile.conf | awk '{print $3}')
+          DNS=$(grep DNS wgcf-profile.conf | awk '{print $3}')
+          PUBLIC=$(grep PublicKey wgcf-profile.conf | awk '{print $3}')
+          ENDPOINT=$(grep Endpoint wgcf-profile.conf | awk '{print $3}')
+
+          cat > warp/config.ini <<EOF
+          [Interface]
+          PrivateKey = $PRIVATE
+          Address = $ADDRESS
+          DNS = $DNS
+
+          [Peer]
+          PublicKey = $PUBLIC
+          Endpoint = $ENDPOINT
+
+          [Socks5]
+          BindAddress = 127.0.0.1:1081
+          EOF
+
+      ########################################################
+      # START WARP
+      ########################################################
+
+      - name: Start WARP
+        run: |
+
+          nohup wireproxy -c warp/config.ini \
+            > warp.log 2>&1 &
+
+          sleep 10
+
+          echo "========= WARP ========="
+          cat warp.log || true
+
+      ########################################################
+      # INSTALL PYTHON PACKAGES
+      ########################################################
+
+      - name: Install Flask Packages
+        run: |
+          pip3 install flask requests pysocks gevent
+
+      ########################################################
+      # CREATE BRIDGE
+      ########################################################
+
+      - name: Create Flask Bridge
+        run: |
+
+          cat > app.py <<'PY'
+          from flask import Flask, request, Response
+          import requests
+
+          app = Flask(__name__)
+
+          SOCKS = "socks5h://127.0.0.1:1081"
+
+          @app.route('/', defaults={'path': ''}, methods=["GET","POST"])
+          @app.route('/<path:path>', methods=["GET","POST"])
+          def proxy(path):
+
+              target = f"http://127.0.0.1:6080/{path}"
+
+              try:
+
+                  if request.method == "POST":
+                      r = requests.post(
+                          target,
+                          data=request.get_data(),
+                          headers=request.headers,
+                          stream=True,
+                          proxies={
+                              "http": SOCKS,
+                              "https": SOCKS
+                          }
+                      )
+                  else:
+                      r = requests.get(
+                          target,
+                          stream=True,
+                          proxies={
+                              "http": SOCKS,
+                              "https": SOCKS
+                          }
+                      )
+
+                  excluded = [
+                      'content-encoding',
+                      'content-length',
+                      'transfer-encoding',
+                      'connection'
+                  ]
+
+                  headers = [
+                      (k, v)
+                      for k, v in r.raw.headers.items()
+                      if k.lower() not in excluded
+                  ]
+
+                  return Response(
+                      r.content,
+                      r.status_code,
+                      headers
+                  )
+
+              except Exception as e:
+                  return str(e), 500
+
+          app.run(
+              host='0.0.0.0',
+              port=8080,
+              threaded=True
+          )
+          PY
+
+      ########################################################
+      # START BRIDGE
+      ########################################################
+
+      - name: Start Flask Bridge
+        run: |
+
+          nohup python3 app.py \
+            > bridge.log 2>&1 &
+
+          sleep 5
+
+          echo "========= BRIDGE ========="
+          cat bridge.log || true
+
+      ########################################################
+      # INSTALL CLOUDFLARED
+      ########################################################
+
+      - name: Install cloudflared
+        run: |
+
+          wget -q \
+          https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+          -O cloudflared
+
+          chmod +x cloudflared
+
+      ########################################################
+      # START TUNNEL
+      ########################################################
+
+      - name: Start Cloudflare Tunnel
+        run: |
+
+          nohup ./cloudflared tunnel \
+            --url http://127.0.0.1:8080 \
+            > tunnel.log 2>&1 &
+
+          sleep 20
+
+          echo "========= TUNNEL LOG ========="
+          cat tunnel.log || true
+
+      ########################################################
+      # SHOW FINAL URL
+      ########################################################
+
+      - name: Show Access URL
+        run: |
+
+          echo ""
+          echo "====================================="
+          echo "            UBUNTU DESKTOP"
+          echo "====================================="
+          echo ""
+
+          URL=$(grep -o 'https://[-a-z0-9]*\.trycloudflare\.com' tunnel.log | head -n 1)
+
+          echo "OPEN THIS LINK:"
+          echo ""
+          echo "$URL/vnc.html"
+          echo ""
+          echo "PASSWORD: 123456"
+          echo ""
+          echo "====================================="
+
+      ########################################################
+      # KEEP RUNNER ALIVE
+      ########################################################
+
+      - name: Keep Alive
+        run: |
+
+          while true
+          do
+            echo "Ubuntu Desktop Alive 😎"
             sleep 60
           done
-
-          echo "✅ 1 hour finished. Exiting..."
